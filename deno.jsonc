@@ -5,8 +5,5 @@
     "lock": "deno cache --lock=deno.lock --lock-write deps.ts",
     "all": "deno task udd && deno lint && deno fmt",
     "test": "deno test -A --unstable"
-  },
-  "imports": {
-    "kv_cron/": "./"
   }
 }

@@ -1,0 +1,15 @@
+{
+  "version": "3",
+  "packages": {
+    "specifiers": {
+      "npm:cron-schedule@4.0.0": "npm:cron-schedule@4.0.0"
+    },
+    "npm": {
+      "cron-schedule@4.0.0": {
+        "integrity": "sha512-+WIxWa9yE9AKeFzVkIVn9Qp/p69EJMZfAYV+xMQ40zI1Gfx+eZJf4l6Ub/wBNc7Cw2/1+Jn+wUbUPlpqdDxH8Q==",
+        "dependencies": {}
+      }
+    }
+  },
+  "remote": {}
+}
