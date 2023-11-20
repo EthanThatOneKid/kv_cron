@@ -6,7 +6,7 @@ import { makeKvCron } from "./kv_cron.ts";
 
 Deno.test("kv_cron", async () => {
   const kv = await Deno.openKv(":memory:");
-  const kvCron = makeKvCron({
+  const { enqueue, process } = makeKvCron({
     kv,
     kvKeyPrefix: ["kv_cron_test"],
     jobs: {
@@ -16,17 +16,8 @@ Deno.test("kv_cron", async () => {
     },
   });
 
-  await kv.listenQueue(async (message: unknown) => {
-    try {
-      await kvCron.process(message);
-    } catch (error) {
-      assertEquals(error.message, "Expected error.");
-    }
-
-    // Your custom logic here...
-  });
-
-  const enqueueResult = await kvCron.enqueue("main", {
+  console.log("Enqueuing cron job...");
+  const enqueueResult = await enqueue("main", {
     schedule: { minute: 1 },
     amount: new Deno.KvU64(1n),
   });
@@ -34,5 +25,15 @@ Deno.test("kv_cron", async () => {
     fail("Failed to enqueue cron job.");
   }
 
-  await new Promise((resolve) => setTimeout(resolve, 60_000));
+  console.log("Listening for cron job...");
+  await kv.listenQueue(async (message: unknown) => {
+    try {
+      console.log("Processing cron job...", { message });
+      await process(message);
+    } catch (error) {
+      assertEquals(error.message, "Expected error.");
+    }
+
+    // Your custom logic here...
+  });
 });
