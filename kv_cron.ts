@@ -1,63 +1,65 @@
 import { fromSchedule, type JSONSchedule } from "./schedule.ts";
 
-const KV_CRON_KEY_PREFIX: Deno.KvKey = ["kv_cron"];
-const KV_CRON_NONCES_KEY_PREFIX: Deno.KvKey = [...KV_CRON_KEY_PREFIX, "nonces"];
-const KV_CRON_ENQUEUED_COUNT_KEY: Deno.KvKey = [
-  ...KV_CRON_KEY_PREFIX,
-  "enqueued_count",
-];
-const KV_CRON_PROCESSED_COUNT_KEY: Deno.KvKey = [
-  ...KV_CRON_KEY_PREFIX,
-  "processed_count",
-];
+export const KV_CRON_KEY_PREFIX = ["kv_cron"] as const satisfies Deno.KvKey;
+export const KV_CRON_KEY_PART_JOBS = "jobs" as const satisfies Deno.KvKeyPart;
+export const KV_CRON_KEY_PART_ENQUEUED_COUNT =
+  "enqueued_count" as const satisfies Deno.KvKeyPart;
+export const KV_CRON_KEY_PART_PROCESSED_COUNT =
+  "processed_count" as const satisfies Deno.KvKeyPart;
 
 /**
- * enqueueAndSetNonce enqueues a data message to be processed by a cron job.
+ * makeKvCronKeyMaker creates a function that creates a key for a cron job.
  */
-async function enqueueAndSetNonce<T>(
-  kv: Deno.Kv,
-  data: T,
-  nonce: string,
-) {
-return await kv
-    .atomic()
-    .check({ key: [...KV_CRON_NONCES_KEY_PREFIX, nonce], versionstamp: null })
-    .enqueue({ nonce, data })
-    .set([...KV_CRON_NONCES_KEY_PREFIX, nonce], true)
-    .sum(KV_CRON_ENQUEUED_COUNT_KEY, 1n)
-    .commit();
+export function makeKvCronKeyMaker(prefix: Deno.KvKey) {
+  return (...keys: Deno.KvKey): Deno.KvKey => [...prefix, ...keys];
 }
 
 /**
- * getNonce retrieves a data message from the queue to be processed by a cron
- * job.
+ * JobsSchema defines a map of possible cron job names to cron job handlers.
  */
-async function getNonce(
-  kv: Deno.Kv,
-  nonce: string,
-) {
-  const nonceResult = await kv.get([...KV_CRON_NONCES_KEY_PREFIX, nonce]);
-  if (nonceResult.value === null) {
-    // This messaged was already processed.
-    return;
-  }
-
-  // Ensure this message was not yet processed.
-  return await kv.atomic()
-    .check(nonceResult)
-    .delete(nonceResult.key)
-    .sum(KV_CRON_PROCESSED_COUNT_KEY, 1n)
-.commit();
+export interface JobsSchema {
+  [name: string | number | symbol]: () => void;
 }
 
 /**
  * KvCronOptions defines the options for creating a cron job manager.
  */
-export interface KvCronOptions {
+export interface KvCronOptions<T extends JobsSchema> {
   /**
    * kv is the Deno.Kv store to use for the cron job manager.
    */
   kv: Deno.Kv;
+
+  /**
+   * kvKeyPrefix is the prefix of the keys used by the cron job manager.
+   */
+  kvKeyPrefix?: Deno.KvKey;
+
+  /**
+   * jobs is a map of cron job names to cron job handlers.
+   */
+  jobs: T;
+
+  /**
+   * generateNonce is a function that generates a random nonce.
+   */
+  generateNonce?: () => string;
+}
+
+/**
+ * EnqueueJobOpOptions defines the options for enqueuing a cron job.
+ */
+export interface EnqueueJobOpOptions
+  extends Pick<KvCronOptions<JobsSchema>, "kv" | "kvKeyPrefix"> {
+  /**
+   * nonce is the nonce of the cron job.
+   */
+  nonce: string;
+
+  /**
+   * name is the name of the cron job.
+   */
+  name: string | number | symbol;
 
   /**
    * schedule is the cron expression that defines when the cron job is triggered.
@@ -65,85 +67,243 @@ export interface KvCronOptions {
   schedule: string | JSONSchedule;
 
   /**
-   * generateNonce is a function that generates a nonce for a given data message.
+   * date is the date which the cron job is relative to.
    */
-  generateNonce: () => string;
+  date?: Date;
 
   /**
-   * handlersMap is a list of handlers for a given cron job.
+   * amount is the number of times the cron job should be triggered.
    */
-  handlersMap: Map<string, Function>;
+  amount?: Deno.KvU64;
+
+  /**
+   * signal is the signal to abort the cron job.
+   */
+  signal?: AbortSignal;
+
+  /**
+   * backoffSchedule can be used to specify the retry policy for failed
+   * executions. Each element in the array represents the number of
+   * milliseconds to wait before retrying the execution. For example,
+   * `[1000, 5000, 10000]` means that a failed execution will be retried at
+   * most 3 times, with 1 second, 5 seconds, and 10 seconds delay between each
+   * retry.
+   */
+  backoffSchedule?: number[];
 }
 
 /**
- * kvCron creates a cron job manager for a given Deno.Kv store.
+ * EnqueuedKvCronJob is a cron job that has been enqueued.
  */
-export async function kvCron<T>(
-  options: KvCronOptions,
-  handle: (data: T) => void,
+export type EnqueuedJob = Omit<
+  EnqueueJobOpOptions,
+  "kv" | "kvKeyPrefix" | "date" | "amount" | "signal"
+>;
+
+/**
+ * isEnqueuedJob returns true if the given value is an enqueued job.
+ */
+function isEnqueuedJob(value: unknown): value is EnqueuedJob {
+  return typeof value === "object" && value !== null && "nonce" in value &&
+    typeof value.nonce === "string" && "name" in value &&
+    typeof value.name === "string" && "schedule" in value &&
+    typeof value.schedule === "string" && ("backoffSchedule" in value &&
+      Array.isArray(value.backoffSchedule) && value.backoffSchedule.every(
+        (v) => typeof v === "number",
+      ));
+}
+
+/**
+ * enqueueJobOp enqueues a data message to be processed by a cron job.
+ */
+async function enqueueJobOp(
+  options: EnqueueJobOpOptions,
+  retryCount = 0,
+): Promise<Deno.KvCommitResult> {
+  const makeKvCronKey = makeKvCronKeyMaker(
+    options.kvKeyPrefix ?? KV_CRON_KEY_PREFIX,
+  );
+  const date = options.date ?? new Date();
+  const delayedDate = fromSchedule(options.schedule).getNextDate(options.date);
+  const delay = delayedDate.getTime() - date.getTime();
+  const result = await options.kv
+    .atomic()
+    .check({
+      key: makeKvCronKey(KV_CRON_KEY_PART_JOBS, options.nonce),
+      versionstamp: null,
+    })
+    .enqueue(
+      {
+        nonce: options.nonce,
+        name: options.name,
+        schedule: options.schedule,
+        backoffSchedule: options.backoffSchedule,
+      } satisfies EnqueuedJob,
+      { delay },
+    )
+    .set(
+      makeKvCronKey(KV_CRON_KEY_PART_JOBS, options.nonce),
+      { amount: options.amount },
+    )
+    .sum(makeKvCronKey(KV_CRON_KEY_PART_ENQUEUED_COUNT), 1n)
+    .commit();
+  if (!result.ok) {
+    if (
+      options.backoffSchedule !== undefined &&
+      options.backoffSchedule.length > retryCount
+    ) {
+      const delay = options.backoffSchedule[retryCount];
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return await enqueueJobOp(options, retryCount + 1);
+    }
+
+    throw new Error("Failed to enqueue cron job.");
+  }
+
+  if (options?.signal) {
+    options.signal.addEventListener(
+      "abort",
+      async () =>
+        await abortOp({
+          kv: options.kv,
+          kvKeyPrefix: options.kvKeyPrefix,
+          nonce: options.nonce,
+        }),
+      { once: true },
+    );
+  }
+
+  return result;
+}
+
+/**
+ * AbortOpOptions defines the options for aborting a cron job.
+ */
+export type AbortOpOptions = Pick<
+  EnqueueJobOpOptions,
+  "kv" | "kvKeyPrefix" | "nonce"
+>;
+
+/**
+ * abortOp aborts a cron job.
+ */
+async function abortOp(options: AbortOpOptions) {
+  const makeKvCronKey = makeKvCronKeyMaker(
+    options.kvKeyPrefix ?? KV_CRON_KEY_PREFIX,
+  );
+  const result = await options.kv
+    .atomic()
+    .check({
+      key: makeKvCronKey(KV_CRON_KEY_PART_JOBS, options.nonce),
+      versionstamp: null,
+    })
+    .delete(makeKvCronKey(KV_CRON_KEY_PART_JOBS, options.nonce))
+    .sum(makeKvCronKey(KV_CRON_KEY_PART_ENQUEUED_COUNT), -1n)
+    .commit();
+  if (!result.ok) {
+    throw new Error("Failed to abort cron job.");
+  }
+
+  return result;
+}
+
+/**
+ * getJobOp gets an enqueued job.
+ */
+async function getJobOp(
+  options: Pick<EnqueueJobOpOptions, "kv" | "kvKeyPrefix" | "nonce">,
 ) {
-  // Find next time the cron job should be triggered.
-  const cron = fromSchedule(options.schedule);
-  
-  // Enqueue a message to be processed at that time.
-  await enqueueAndSetNonce(
- 
-  // Set a nonce for the message.
-  // When the message is processed, delete the nonce.
-  // If the nonce is already deleted, then the message was already processed.
-  // Handle the message.
+  const makeKvCronKey = makeKvCronKeyMaker(
+    options.kvKeyPrefix ?? KV_CRON_KEY_PREFIX,
+  );
+  return await options.kv.get<{ amount?: Deno.KvU64 }>(
+    makeKvCronKey(KV_CRON_KEY_PART_JOBS, options.nonce),
+  );
 }
 
 /**
- * createKvCron creates a cron job manager for a given Deno.Kv store.
+ * EnqueueOptions defines the options for enqueuing a cron job.
  */
-export function createKvCron(kv: Deno.Kv) {
-  const handlers: Map<string, (data: string) => void> = new Map();
+type EnqueueOptions = Pick<
+  EnqueueJobOpOptions,
+  "schedule" | "date" | "amount" | "signal" | "backoffSchedule"
+>;
 
+/**
+ * makeKvCron creates a cron job manager.
+ */
+export function makeKvCron<T extends JobsSchema>(options: KvCronOptions<T>) {
   return {
-    async register(cronExpression: string, fn: (data: string) => void) {
-      // const cron = parseCronExpression(cronExpression);
-      // const channel = `${CHANNEL_PREFIX}${cronExpression}`;
-      handlers.set(cronExpression, fn);
+    async enqueue(name: keyof T, enqueueOptions: EnqueueOptions) {
+      const nonce = options.generateNonce
+        ? options.generateNonce()
+        : crypto.randomUUID();
+      const result = await enqueueJobOp({
+        kv: options.kv,
+        kvKeyPrefix: options.kvKeyPrefix,
+        nonce,
+        name,
+        schedule: enqueueOptions.schedule,
+        date: enqueueOptions.date,
+        amount: enqueueOptions.amount,
+        signal: enqueueOptions.signal,
+        backoffSchedule: enqueueOptions.backoffSchedule,
+      });
+      if (!result.ok) {
+        throw new Error("Failed to enqueue cron job.");
+      }
 
-      // If there already a cron job registered for this expression, delete it
-      // and recreate it.
-      // TODO: Design a data flow that allows us to update the cron job.
+      return result;
     },
 
-    async handleMessage(message: { channel: string; nonce: string }) {
-      if (
-        typeof message.channel !== "string" ||
-        !message.channel.startsWith(CHANNEL_PREFIX)
-      ) {
+    async process(data: unknown, date = new Date()) {
+      if (!isEnqueuedJob(data)) {
         return;
       }
 
-      // Parse the cron expression from the channel name.
-      const cronExpression = message.channel.slice(CHANNEL_PREFIX.length);
-      const handler = handlers.get(cronExpression);
-      if (handler === undefined) {
-        throw new Error(`No handler registered for channel ${message.channel}`);
-      }
-
-      // Ensure this message was not yet processed.
-      const nonceKey = [`${message.channel}:nonces`, message.nonce];
-      const nonceResult = await kv.get(nonceKey);
-      if (nonceResult === null) {
-        // This message was already handled.
+      const jobResult = await getJobOp({
+        kv: options.kv,
+        kvKeyPrefix: options.kvKeyPrefix,
+        nonce: data.nonce,
+      });
+      if (!jobResult.value) {
         return;
       }
 
-      // Invoke the handler one time.
-      await handler(cronExpression);
+      const handle = options.jobs[data.name];
+      if (!handle) {
+        throw new Error(`Unknown cron job: ${data.name.toString()}`);
+      }
 
-      // Delete the nonce key to prevent this message from being handled again.
-      await kv.atomic()
-        .check(nonceResult)
-        .delete(nonceResult.key)
+      await handle();
+
+      const makeKvCronKey = makeKvCronKeyMaker(
+        options.kvKeyPrefix ?? KV_CRON_KEY_PREFIX,
+      );
+      const postprocessOp = options.kv.atomic().check(jobResult);
+      if (!jobResult.value.amount || jobResult.value.amount?.value > 1n) {
+        const result = await enqueueJobOp({
+          kv: options.kv,
+          kvKeyPrefix: options.kvKeyPrefix,
+          nonce: data.nonce,
+          name: data.name,
+          schedule: data.schedule,
+          date,
+          amount: jobResult.value.amount
+            ? new Deno.KvU64(jobResult.value.amount.value - 1n)
+            : undefined,
+          backoffSchedule: data.backoffSchedule,
+        });
+        if (!result.ok) {
+          throw new Error("Failed to enqueue cron job.");
+        }
+      } else {
+        postprocessOp.delete(jobResult.key);
+      }
+
+      return await options.kv.atomic()
+        .sum(makeKvCronKey(KV_CRON_KEY_PART_PROCESSED_COUNT), 1n)
         .commit();
     },
   };
 }
-
-const CHANNEL_PREFIX = "cron-channel:";
