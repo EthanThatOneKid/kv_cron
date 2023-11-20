@@ -5,7 +5,6 @@ import { Cron, parseCronExpression } from "./deps.ts";
  * cron schedule.
  */
 export const JSON_SCHEDULE_FIELD_NAMES = [
-  "second", // Include if we ever support seconds.
   "minute",
   "hour",
   "dayOfMonth",

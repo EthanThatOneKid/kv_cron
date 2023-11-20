@@ -16,16 +16,7 @@ Deno.test("kv_cron", async () => {
     },
   });
 
-  await kv.listenQueue(async (message: unknown) => {
-    try {
-      await kvCron.process(message);
-    } catch (error) {
-      assertEquals(error.message, "Expected error.");
-    }
-
-    // Your custom logic here...
-  });
-
+  console.log("Enqueuing cron job...");
   const enqueueResult = await kvCron.enqueue("main", {
     schedule: { minute: 1 },
     amount: new Deno.KvU64(1n),
@@ -34,5 +25,15 @@ Deno.test("kv_cron", async () => {
     fail("Failed to enqueue cron job.");
   }
 
-  await new Promise((resolve) => setTimeout(resolve, 60_000));
+  console.log("Listening for cron job...");
+  await kv.listenQueue(async (message: unknown) => {
+    try {
+      console.log("Processing cron job...", { message });
+      await kvCron.process(message);
+    } catch (error) {
+      assertEquals(error.message, "Expected error.");
+    }
+
+    // Your custom logic here...
+  });
 });
