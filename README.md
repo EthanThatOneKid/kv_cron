@@ -1,5 +1,7 @@
 # kv_cron
 
+[![deno doc](https://doc.deno.land/badge.svg)](https://deno.land/x/kv_cron)
+
 Use the Deno Kv API to manage cron jobs.
 
 ## Usage
@@ -32,6 +34,14 @@ if (import.meta.main) {
   });
 }
 ```
+
+## API
+
+For generated API documentation, see <https://deno.land/x/kv_cron/mod.ts>.
+
+## License
+
+[`LICENSE`](LICENSE)
 
 ---
 
