@@ -304,5 +304,8 @@ export function makeKvCron<T extends JobsSchema>(options: KvCronOptions<T>) {
         .sum(makeKvCronKey(KV_CRON_KEY_PART_PROCESSED_COUNT), 1n)
         .commit();
     },
+    // TODO: Implement `getAll` method. `getAll` should return all enqueued
+    // jobs.
+    // https://discord.com/channels/684898665143206084/1174052112536195102/1174412447692628081
   };
 }
