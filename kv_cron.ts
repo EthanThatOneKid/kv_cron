@@ -219,7 +219,17 @@ export interface EnqueueOptions extends
 /**
  * makeKvCron creates a cron job manager.
  */
-export function makeKvCron<T extends JobsSchema>(options: KvCronOptions<T>) {
+export function makeKvCron<T extends JobsSchema>(options: KvCronOptions<T>): {
+  /**
+   * enqueue enqueues a cron job.
+   */
+  enqueue(name: keyof T, options: EnqueueOptions): Promise<Deno.KvCommitResult>;
+
+  /**
+   * process processes a cron job.
+   */
+  process(data: unknown, date?: Date): void | Promise<void>;
+} {
   return {
     async enqueue(name: keyof T, enqueueOptions: EnqueueOptions) {
       const nonce = options.generateNonce
@@ -300,7 +310,7 @@ export function makeKvCron<T extends JobsSchema>(options: KvCronOptions<T>) {
         postprocessOp.delete(jobResult.key);
       }
 
-      return await options.kv.atomic()
+      await options.kv.atomic()
         .sum(makeKvCronKey(KV_CRON_KEY_PART_PROCESSED_COUNT), 1n)
         .commit();
     },
