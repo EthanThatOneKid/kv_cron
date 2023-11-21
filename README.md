@@ -1,22 +1,36 @@
 # kv_cron
 
-Use Deno Kv API to register cronjobs.
+Use the Deno Kv API to manage cron jobs.
 
 ## Usage
 
-```typescript
-import { createKvCron } from "https://deno.land/x/kv_cron/mod.ts";
+```ts
+import { makeKvCron } from "https://deno.land/x/kv_cron/mod.ts";
 
-const kv = await Deno.openKv();
-const kvCron = createKvCron(kv);
+if (import.meta.main) {
+  // Open the KV store.
+  const kv = await Deno.openKv();
 
-kvCron.register("*/5 * * * *", async () => {
-  console.log("Hello, world!");
-});
+  // Establish a cron job manager.
+  const { enqueue, process } = makeKvCron({
+    kv,
+    jobs: {
+      helloWorld() {
+        console.log("Hello, world!");
+      },
+    },
+  });
 
-kv.listenQueue(async (message) => {
-  await kvCron.handleMessage(message);
-});
+  // Enqueue the helloWorld job to run every second.
+  await enqueue("helloWorld", {
+    schedule: { second: { step: 1 } },
+  });
+
+  // Process the queue.
+  await kv.listenQueue(async (message) => {
+    await process(message);
+  });
+}
 ```
 
 ---
