@@ -5,6 +5,7 @@ import { Cron, parseCronExpression } from "./deps.ts";
  * cron schedule.
  */
 export const JSON_SCHEDULE_FIELD_NAMES = [
+  "second",
   "minute",
   "hour",
   "dayOfMonth",
@@ -21,22 +22,15 @@ export type JSONScheduleFieldName = (typeof JSON_SCHEDULE_FIELD_NAMES)[number];
  * JSONScheduleFieldRange is a possible value of a JSON-serializable field of a
  * cron schedule.
  */
-export interface JSONScheduleFieldRange {
-  /**
-   * start is the starting value of the range.
-   */
-  start: number | "*";
-
-  /**
-   * end is the ending value of the range.
-   */
-  end?: number;
-
-  /**
-   * step is the step value of the range.
-   */
-  step?: number;
-}
+export type JSONScheduleFieldRange =
+  | {
+    start: number | "*";
+    end: number;
+    step?: number;
+  }
+  | {
+    step: number;
+  };
 
 /**
  * JSONScheduleField is a possible value of a JSON-serializable field of a cron
@@ -62,17 +56,28 @@ export function fromScheduleField(field: JSONScheduleField): string {
     return field.toString();
   }
 
-  return `${field.start}${field.end !== undefined ? `-${field.end}` : ""}${
-    field.step !== undefined ? `/${field.step}` : ""
-  }`;
+  if ("start" in field && "end" in field) {
+    return `${field.start}-${field.end}${
+      field.step !== undefined ? `/${field.step}` : ""
+    }`;
+  }
+
+  return `*/${field.step}`;
 }
 
 /**
  * toString converts a JSON-serializable cron schedule to a string cron schedule.
  */
 export function toString(schedule: JSONSchedule): string {
-  return JSON_SCHEDULE_FIELD_NAMES
+  const names = schedule.second !== undefined
+    ? JSON_SCHEDULE_FIELD_NAMES
+    : JSON_SCHEDULE_FIELD_NAMES.slice(1);
+
+  return names
     .map((fieldName) => {
+      // field will never undefined in the 'second' case, but it will be in the
+      // other cases. Thus, we only ever need to apply a default '*' value in
+      // the other cases.
       const field = schedule[fieldName];
       if (field === undefined) {
         return "*";

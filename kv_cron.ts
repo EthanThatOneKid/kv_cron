@@ -77,11 +77,6 @@ export interface EnqueueJobOpOptions
   amount?: Deno.KvU64;
 
   /**
-   * signal is the signal to abort the cron job.
-   */
-  signal?: AbortSignal;
-
-  /**
    * backoffSchedule can be used to specify the retry policy for failed
    * executions. Each element in the array represents the number of
    * milliseconds to wait before retrying the execution. For example,
@@ -104,13 +99,11 @@ export type EnqueuedJob = Omit<
  * isEnqueuedJob returns true if the given value is an enqueued job.
  */
 function isEnqueuedJob(value: unknown): value is EnqueuedJob {
-  return typeof value === "object" && value !== null && "nonce" in value &&
-    typeof value.nonce === "string" && "name" in value &&
-    typeof value.name === "string" && "schedule" in value &&
-    typeof value.schedule === "string" && ("backoffSchedule" in value &&
-      Array.isArray(value.backoffSchedule) && value.backoffSchedule.every(
-        (v) => typeof v === "number",
-      ));
+  const job = value as EnqueuedJob;
+  return (
+    "nonce" in job && typeof job.nonce === "string" &&
+    "name" in job && typeof job.name === "string"
+  );
 }
 
 /**
@@ -128,10 +121,6 @@ async function enqueueJobOp(
   const delay = delayedDate.getTime() - date.getTime();
   const result = await options.kv
     .atomic()
-    .check({
-      key: makeKvCronKey(KV_CRON_KEY_PART_JOBS, options.nonce),
-      versionstamp: null,
-    })
     .enqueue(
       {
         nonce: options.nonce,
@@ -160,19 +149,6 @@ async function enqueueJobOp(
     throw new Error("Failed to enqueue cron job.");
   }
 
-  if (options?.signal) {
-    options.signal.addEventListener(
-      "abort",
-      async () =>
-        await abortOp({
-          kv: options.kv,
-          kvKeyPrefix: options.kvKeyPrefix,
-          nonce: options.nonce,
-        }),
-      { once: true },
-    );
-  }
-
   return result;
 }
 
@@ -191,14 +167,19 @@ async function abortOp(options: AbortOpOptions) {
   const makeKvCronKey = makeKvCronKeyMaker(
     options.kvKeyPrefix ?? KV_CRON_KEY_PREFIX,
   );
+  const enqueuedCountResult = await options.kv.get<Deno.KvU64>(
+    makeKvCronKey(KV_CRON_KEY_PART_ENQUEUED_COUNT),
+  );
+  const nextEnqueuedCount = new Deno.KvU64(
+    enqueuedCountResult.value ? enqueuedCountResult.value.value - 1n : 0n,
+  );
   const result = await options.kv
     .atomic()
-    .check({
-      key: makeKvCronKey(KV_CRON_KEY_PART_JOBS, options.nonce),
-      versionstamp: null,
-    })
     .delete(makeKvCronKey(KV_CRON_KEY_PART_JOBS, options.nonce))
-    .sum(makeKvCronKey(KV_CRON_KEY_PART_ENQUEUED_COUNT), -1n)
+    .set(
+      makeKvCronKey(KV_CRON_KEY_PART_ENQUEUED_COUNT),
+      nextEnqueuedCount,
+    )
     .commit();
   if (!result.ok) {
     throw new Error("Failed to abort cron job.");
@@ -224,10 +205,16 @@ async function getJobOp(
 /**
  * EnqueueOptions defines the options for enqueuing a cron job.
  */
-type EnqueueOptions = Pick<
-  EnqueueJobOpOptions,
-  "schedule" | "date" | "amount" | "signal" | "backoffSchedule"
->;
+export interface EnqueueOptions extends
+  Pick<
+    EnqueueJobOpOptions,
+    "schedule" | "date" | "amount" | "backoffSchedule"
+  > {
+  /**
+   * signal is the signal that can be used to abort the cron job.
+   */
+  signal?: AbortSignal;
+}
 
 /**
  * makeKvCron creates a cron job manager.
@@ -238,6 +225,20 @@ export function makeKvCron<T extends JobsSchema>(options: KvCronOptions<T>) {
       const nonce = options.generateNonce
         ? options.generateNonce()
         : crypto.randomUUID();
+      if (enqueueOptions?.signal) {
+        enqueueOptions.signal.addEventListener(
+          "abort",
+          async () => {
+            await abortOp({
+              kv: options.kv,
+              kvKeyPrefix: options.kvKeyPrefix,
+              nonce,
+            });
+          },
+          { once: true },
+        );
+      }
+
       const result = await enqueueJobOp({
         kv: options.kv,
         kvKeyPrefix: options.kvKeyPrefix,
@@ -246,7 +247,6 @@ export function makeKvCron<T extends JobsSchema>(options: KvCronOptions<T>) {
         schedule: enqueueOptions.schedule,
         date: enqueueOptions.date,
         amount: enqueueOptions.amount,
-        signal: enqueueOptions.signal,
         backoffSchedule: enqueueOptions.backoffSchedule,
       });
       if (!result.ok) {
@@ -274,13 +274,12 @@ export function makeKvCron<T extends JobsSchema>(options: KvCronOptions<T>) {
       if (!handle) {
         throw new Error(`Unknown cron job: ${data.name.toString()}`);
       }
-
       await handle();
 
       const makeKvCronKey = makeKvCronKeyMaker(
         options.kvKeyPrefix ?? KV_CRON_KEY_PREFIX,
       );
-      const postprocessOp = options.kv.atomic().check(jobResult);
+      const postprocessOp = options.kv.atomic(); // .check(jobResult);
       if (!jobResult.value.amount || jobResult.value.amount?.value > 1n) {
         const result = await enqueueJobOp({
           kv: options.kv,

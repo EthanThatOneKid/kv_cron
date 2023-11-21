@@ -2,14 +2,9 @@
   "version": "3",
   "packages": {
     "specifiers": {
-      "npm:@datasert/cronjs-parser@1.2.0": "npm:@datasert/cronjs-parser@1.2.0",
       "npm:cron-schedule@4.0.0": "npm:cron-schedule@4.0.0"
     },
     "npm": {
-      "@datasert/cronjs-parser@1.2.0": {
-        "integrity": "sha512-7kzYh7F5V3ElX+k3W9w6SKS6WdjqJQ2gIY1y0evldnjAwZxnFzR/Yu9Mv9OeDaCQX+mGAq2MvEnJbwu9oj3CXQ==",
-        "dependencies": {}
-      },
       "cron-schedule@4.0.0": {
         "integrity": "sha512-+WIxWa9yE9AKeFzVkIVn9Qp/p69EJMZfAYV+xMQ40zI1Gfx+eZJf4l6Ub/wBNc7Cw2/1+Jn+wUbUPlpqdDxH8Q==",
         "dependencies": {}

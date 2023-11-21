@@ -1,4 +1,4 @@
-import { assertEquals } from "https://deno.land/std@0.207.0/assert/mod.ts";
+import { assertEquals } from "./deps.ts";
 import { toString } from "./schedule.ts";
 
 Deno.test("toString", () => {
@@ -20,7 +20,11 @@ Deno.test("toString", () => {
     }),
     "*/5 1,2,3 * * *",
   );
-});
 
-Deno.test("toString", () => {
+  assertEquals(
+    toString({
+      second: { start: 0, end: 10, step: 2 },
+    }),
+    "0-10/2 * * * * *",
+  );
 });
